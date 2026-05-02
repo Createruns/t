@@ -1,0 +1,266 @@
+name: Ubuntu RDP Remote Access
+
+on:
+  # Manual trigger - click "Run workflow" button
+  workflow_dispatch:
+    inputs:
+      session_duration:
+        description: "Session duration in minutes (min: 20, max: 360)"
+        required: true
+        default: "345"
+        type: choice
+        options:
+          - "20"
+          - "30"
+          - "60"
+          - "90"
+          - "120"
+          - "180"
+          - "240"
+          - "345"
+          - "360"
+
+jobs:
+  ubuntu-rdp:
+    runs-on: ubuntu-latest
+    # Customizable timeout: manual trigger uses chosen duration, schedule defaults to 60 min (max: 360 = 6 hours)
+    timeout-minutes: ${{ fromJSON(github.event.inputs.session_duration || '60') }}
+
+    # Limit GITHUB_TOKEN permissions (best practice)
+    permissions:
+      contents: read
+
+    steps:
+      - name: "Install XFCE4 Desktop and RDP Server"
+        run: |
+          echo "Installing XFCE4 desktop environment and xRDP..."
+
+          # Retry function with exponential backoff
+          apt_retry() {
+            local n=0
+            local max_retry=5
+            local delay=30
+            while true; do
+              if sudo apt "$@"; then
+                return 0
+              fi
+              n=$((n+1))
+              if [ $n -ge $max_retry ]; then
+                echo "Max retries reached"
+                return 1
+              fi
+              echo "Retrying in $((delay * 2 ** (n-1)))s..."
+              sleep $((delay * 2 ** (n-1)))
+            done
+          }
+
+          # Fix broken packages
+          sudo apt --fix-broken install -y || true
+          sudo apt clean || true
+
+          # Update and install
+          apt_retry update || exit 1
+          apt_retry install -y xfce4 xfce4-goodies xrdp dbus-x11 x11-xserver-utils || exit 1
+
+          # Firefox with fallback
+          sudo apt install -y firefox || sudo snap install firefox || echo "Firefox skipped"
+
+          # Start services
+          sudo service dbus start
+          echo "startxfce4" > ~/.xsession
+          sudo chown $(whoami):$(whoami) ~/.xsession
+          sudo service xrdp start
+
+          echo "✅ Installation completed!"
+
+      - name: "Create User and Configure Access"
+        run: |
+          echo "Creating user 'gg' with sudo privileges..."
+
+          # Create user 'gg' with password 'root' (non-interactive)
+          echo "gg:root" | sudo chpasswd 2>/dev/null || {
+            sudo useradd -m -s /bin/bash gg
+            echo "gg:root" | sudo chpasswd
+          }
+
+          # Add user to sudo group
+          sudo usermod -aG sudo gg
+
+          # Set root password to 'root'
+          echo "root:root" | sudo chpasswd
+
+          echo "✅ User 'gg' created with sudo privileges"
+          echo "✅ Username: gg"
+          echo "✅ Password: root"
+          echo "✅ Root password set to: root"
+
+      - name: "Configure SSH for Password Authentication"
+        run: |
+          echo "Configuring SSH for password authentication..."
+
+          # Backup existing SSH config
+          sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+
+          # Create new SSH config
+          sudo bash -c 'cat > /etc/ssh/sshd_config << "SSHEOF"
+          # SSH LOGIN SETTINGS
+          PasswordAuthentication yes
+          PermitRootLogin yes
+          PubkeyAuthentication no
+          ChallengeResponseAuthentication no
+          UsePAM yes
+
+          # SFTP SETTINGS
+          Subsystem sftp /usr/lib/openssh/sftp-server
+          SSHEOF'
+
+          # Restart SSH service
+          sudo service ssh restart
+
+          echo "✅ SSH configured for password authentication"
+
+      - name: "Display Connection Information"
+        run: |
+          echo ""
+          echo "UBUNTU RDP ACCESS READY"
+          echo "=================================================="
+          echo "Runner: ubuntu-latest-l"
+          echo "OS: Ubuntu Latest"
+          echo ""
+          echo "🔗 Connection Details:"
+          echo "   RDP/SSH Access is now configured"
+          echo "   Username: gg"
+          echo "   Password: root"
+          echo "   Root Password: root"
+          echo ""
+          echo "📋 Connection Instructions:"
+          echo "1. RDP Connection:"
+          echo "   - Use any RDP client (Remote Desktop Connection)"
+          echo "   - Connect to the runner's IP address"
+          echo "   - Login with username: gg, password: root"
+          echo ""
+          echo "2. SSH Connection:"
+          echo "   - Use: ssh gg@<runner-ip>"
+          echo "   - Password: root"
+          echo ""
+          echo "⏳ Session will run until manually stopped"
+          echo "=================================================="
+          echo ""
+
+          # Display network information
+          echo "Network Information:"
+          ip addr show | grep -E 'inet ' | grep -v '127.0.0.1' || echo "Network info not available"
+          echo ""
+
+      - name: "Maintain Connection and Setup Pinggy Tunnel"
+        run: |
+          echo "Maintaining connection and setting up remote access..."
+          echo "Session started at: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo ""
+
+          # Install openssh-client if not present
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+          echo ""
+          echo "SETTING UP PINGGY SSH TUNNEL FOR REMOTE ACCESS"
+          echo "=================================================="
+          echo "Establishing secure tunnel for RDP access (port 3389)"
+          echo "This will provide a public URL to access your RDP session"
+          echo ""
+
+          # Start health check in background
+          (
+            while true; do
+              # Health check - verify xrdp is running
+              if ! sudo service xrdp status > /dev/null 2>&1; then
+                  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ xRDP service not running, attempting restart..."
+                  sudo service xrdp restart
+                  sleep 5
+              fi
+
+              # Health check - verify SSH is running
+              if ! sudo service ssh status > /dev/null 2>&1; then
+                  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ SSH service not running, attempting restart..."
+                  sudo service ssh restart
+                  sleep 5
+              fi
+
+              sleep 300  # 5 minutes between health checks
+            done
+          ) &
+
+          # Start SSH tunnel via Pinggy for RDP access (this will keep the connection alive)
+          # This creates a public URL for accessing the RDP service on port 3389
+          echo "Starting Pinggy tunnel - this will keep the session alive..."
+          echo "The tunnel URL will be displayed below:"
+          echo ""
+          while true; do
+            ssh -p 443 -R0:localhost:3389 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 hkyZ3QL0F9w+tcp@pro.pinggy.io
+            sleep 10
+          done
+
+          echo ""
+          echo "✅ Session ended"
+          echo "=================================================="
+
+      # ──────────────────────────────────────────────────────────────
+      # ARTIFACT UPLOAD — saves everything in /root/Downloads/
+      # Runs even if the session is cancelled or fails (always: true)
+      # ──────────────────────────────────────────────────────────────
+      - name: "Prepare Downloads Folder for Upload"
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "📦 PREPARING ARTIFACT UPLOAD FROM /root/Downloads/"
+          echo "=================================================="
+
+          # Ensure /root/Downloads exists and is accessible
+          sudo mkdir -p /root/Downloads
+          sudo chmod -R 755 /root/Downloads
+          sudo chown -R $(whoami):$(whoami) /root/Downloads
+
+          # Create clean staging directory in workspace
+          rm -rf "$GITHUB_WORKSPACE/artifact-downloads"
+          mkdir -p "$GITHUB_WORKSPACE/artifact-downloads"
+
+          # ── Primary: /root/Downloads/ ──────────────────────────
+          echo "📂 Copying from /root/Downloads/ ..."
+          sudo cp -r /root/Downloads/. "$GITHUB_WORKSPACE/artifact-downloads/" 2>/dev/null && \
+            echo "✅ /root/Downloads/ copied successfully" || \
+            echo "⚠️  /root/Downloads/ is empty or not accessible"
+
+          # ── Secondary: ~/Downloads/ (runner home) ──────────────
+          if [ -d "$HOME/Downloads" ] && [ "$HOME" != "/root" ]; then
+            echo "📂 Copying from $HOME/Downloads/ ..."
+            cp -r "$HOME/Downloads/." "$GITHUB_WORKSPACE/artifact-downloads/" 2>/dev/null && \
+              echo "✅ $HOME/Downloads/ copied successfully" || \
+              echo "⚠️  $HOME/Downloads/ is empty"
+          fi
+
+          # ── Fix permissions on staged files ────────────────────
+          sudo chown -R $(whoami):$(whoami) "$GITHUB_WORKSPACE/artifact-downloads/"
+          sudo chmod -R 755 "$GITHUB_WORKSPACE/artifact-downloads/"
+
+          # ── Summary ────────────────────────────────────────────
+          echo ""
+          echo "📋 Files ready for upload:"
+          echo "=================================================="
+          find "$GITHUB_WORKSPACE/artifact-downloads/" -type f | while read f; do
+            echo "  📄 $f ($(du -sh "$f" | cut -f1))"
+          done
+          TOTAL=$(du -sh "$GITHUB_WORKSPACE/artifact-downloads/" 2>/dev/null | cut -f1)
+          echo "--------------------------------------------------"
+          echo "  📦 Total size: ${TOTAL:-0}"
+          echo "=================================================="
+
+      - name: "Upload Downloads as Artifact"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads-backup-${{ github.run_id }}
+          path: artifact-downloads/
+          # Keep artifacts for 90 days (max for public repos: 90, private: 400)
+          retention-days: 90
+          # Don't fail the workflow if there's nothing to upload
+          if-no-files-found: warn
