@@ -255,4 +255,35 @@ test.describe('Mobile AI Sheet & Editor Tests', () => {
     const headerTexts = await Promise.all(headers.map(h => h.inputValue()));
     expect(headerTexts).toContain('Total Value');
   });
+
+  test('should robustly parse JSON actions with conversational wrapper and without warnings', async ({ page }) => {
+    // Conversational wrapper with ```json codeblock
+    const conversationalOutput = `Here are the steps to add your profit column and sort the data:
+\`\`\`json
+{
+  "actions": [
+    { "type": "add_column", "header": "Profit" },
+    { "type": "sort", "column": 2, "ascending": false }
+  ]
+}
+\`\`\`
+I have applied the changes for you.`;
+
+    await page.evaluate((out) => window.handleAgentOutput(out), conversationalOutput);
+
+    const headers = await page.locator('th input').all();
+    const headerTexts = await Promise.all(headers.map(h => h.inputValue()));
+    expect(headerTexts).toContain('Profit');
+  });
+
+  test('should seamlessly fall back to CSV when model outputs raw or block CSV', async ({ page }) => {
+    const rawCsvOutput = `Item,Category,Quantity,Price
+Widget Premium,Hardware,50,450
+Software Ultimate,Software,10,999`;
+
+    await page.evaluate((out) => window.handleAgentOutput(out), rawCsvOutput);
+
+    const firstRowInputs = await page.locator('tr:nth-child(2) td input').all();
+    expect(await firstRowInputs[0].inputValue()).toBe('Widget Premium');
+  });
 });
