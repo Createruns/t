@@ -3,13 +3,11 @@ import path from 'path';
 
 test.describe('Mobile AI Sheet & Editor Tests', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the local file
     const fileUrl = `file://${path.resolve(__dirname, 'index.html')}`;
     await page.goto(fileUrl);
   });
 
   test('should render table view by default with initial data', async ({ page }) => {
-    // Check if table view is active
     await expect(page.locator('#btnGrid')).toHaveClass(/active/);
     await expect(page.locator('#gridContainer')).toBeVisible();
 
@@ -50,7 +48,6 @@ test.describe('Mobile AI Sheet & Editor Tests', () => {
   test('should display debug panel and allow toggling', async ({ page }) => {
     const debugContent = page.locator('#debugContent');
 
-    // Initial state (hidden)
     await expect(debugContent).toBeHidden();
 
     // Click to toggle
@@ -64,27 +61,27 @@ test.describe('Mobile AI Sheet & Editor Tests', () => {
 
   test('should prompt for API key and save it', async ({ page }) => {
     // Click API key button
-    await page.locator('.config-btn').click();
+    await page.locator('header .config-btn').click();
     await expect(page.locator('#keyModal')).toBeVisible();
 
     // Enter key and save
     await page.locator('#apiKeyInput').fill('test-api-key');
-    await page.locator('button', { hasText: 'Save Key' }).click();
+    await page.locator('button', { hasText: 'Save Settings' }).click();
 
     // Modal should close
     await expect(page.locator('#keyModal')).toBeHidden();
 
     // Verify localStorage
-    const savedKey = await page.evaluate(() => localStorage.getItem('nv_api_key'));
+    const savedKey = await page.evaluate(() => localStorage.getItem('kilo_api_key'));
     expect(savedKey).toBe('test-api-key');
   });
 
   test('should fall back to hardcoded models when API fails', async ({ page }) => {
     // Intercept API call to simulate failure
-    await page.route('**/v1/models', route => route.abort('failed'));
+    await page.route('**/models', route => route.abort('failed'));
 
     // Save key to trigger model fetch
-    await page.evaluate(() => localStorage.setItem('nv_api_key', 'test-key'));
+    await page.evaluate(() => localStorage.setItem('kilo_api_key', 'test-key'));
     await page.evaluate(() => window.fetchModels());
 
     // Wait for the fallback process to complete
@@ -93,6 +90,169 @@ test.describe('Mobile AI Sheet & Editor Tests', () => {
     // Check if dropdown is populated with fallbacks
     const options = await page.locator('#modelSelect option').allInnerTexts();
     expect(options.length).toBeGreaterThan(0);
-    expect(options).toContain('llama-3.1-70b-instruct');
+    expect(options).toContain('google/gemini-3.8-flash');
+  });
+
+  test('should evaluate spreadsheet formulas (=SUM and arithmetic)', async ({ page }) => {
+    // Insert a formula in cell Quantity for row 2
+    await page.evaluate(() => {
+      window.currentData[1][2] = '=SUM(C3:C4)';
+      window.renderTable();
+    });
+
+    const qtyInput = page.locator('tr:nth-child(2) td:nth-child(4) input');
+    expect(await qtyInput.inputValue()).toBe('27');
+
+    // Test arithmetic expression =C3*D3 (5 * 300 = 1500)
+    await page.evaluate(() => {
+      window.currentData[1][3] = '=C3*D3';
+      window.renderTable();
+    });
+
+    const priceInput = page.locator('tr:nth-child(2) td:nth-child(5) input');
+    expect(await priceInput.inputValue()).toBe('1500');
+  });
+
+  test('should support cell formatting and toolbar controls', async ({ page }) => {
+    // Select cell and apply bold
+    await page.evaluate(() => {
+      window.setActiveCell(1, 0);
+      window.toggleFormat('bold');
+    });
+
+    const cell = page.locator('tr:nth-child(2) td:nth-child(2)');
+    await expect(cell).toHaveCSS('font-weight', '700');
+  });
+
+  test('should insert and delete rows dynamically', async ({ page }) => {
+    const initialRows = await page.locator('tr').count();
+    await page.locator('button[title="Add Row Below"]').click();
+    expect(await page.locator('tr').count()).toBe(initialRows + 1);
+
+    await page.locator('button[title="Delete Row"]').click();
+    expect(await page.locator('tr').count()).toBe(initialRows);
+  });
+
+  test('should open Chart modal and render Chart.js canvas', async ({ page }) => {
+    await page.locator('#btnChart').click();
+    await expect(page.locator('#chartModal')).toBeVisible();
+
+    const canvas = page.locator('#chartCanvas');
+    await expect(canvas).toBeVisible();
+
+    // Verify close button
+    await page.locator('#chartModal .modal-close-btn').click();
+    await expect(page.locator('#chartModal')).toBeHidden();
+  });
+
+  test('should switch providers to Google Gemini Direct and update UI badge', async ({ page }) => {
+    // Switch provider to Gemini Direct
+    await page.locator('#providerSelector').selectOption('gemini_direct');
+    const badge = page.locator('#activeProviderBadge');
+    await expect(badge).toHaveText('Google Gemini Direct');
+
+    // Verify Gemini models are loaded in dropdown
+    const options = await page.locator('#modelSelect option').allInnerTexts();
+    expect(options).toContain('gemini-3.8-flash');
+  });
+
+  test('should execute smart data cleanup and normalization', async ({ page }) => {
+    await page.evaluate(() => {
+      window.currentData[1][0] = '   Widget A   ';
+      window.currentData[1][2] = '';
+      window.smartCleanData();
+    });
+
+    const cleanedItem = await page.locator('tr:nth-child(2) td:nth-child(2) input').inputValue();
+    expect(cleanedItem).toBe('Widget A');
+
+    const filledQty = await page.locator('tr:nth-child(2) td:nth-child(4) input').inputValue();
+    expect(filledQty).toBe('0');
+  });
+
+  test('should provide AI Chart Recommendations with automatic axis selection', async ({ page }) => {
+    await page.locator('#btnChart').click();
+    await expect(page.locator('#chartModal')).toBeVisible();
+
+    await page.locator('button:has-text("💡 Recommend Chart")').click();
+
+    const recommendationHint = page.locator('#chartRecommendationHint');
+    await expect(recommendationHint).toBeVisible();
+    await expect(recommendationHint).toContainText('Recommended');
+  });
+
+  test('should evaluate extended formulas: IF, VLOOKUP, ROUND, and CONCATENATE', async ({ page }) => {
+    // Test IF formula: =IF(C2>10, "High", "Low") -> 15 > 10 => "High"
+    const ifVal = await page.evaluate(() => window.evaluateFormula('=IF(C2>10, "High", "Low")'));
+    expect(ifVal).toBe('High');
+
+    // Test VLOOKUP formula: =VLOOKUP("Widget A", A2:D4, 4, FALSE) -> Price is "120"
+    const vlookupVal = await page.evaluate(() => window.evaluateFormula('=VLOOKUP("Widget A", A2:D4, 4, FALSE)'));
+    expect(vlookupVal).toBe('120');
+
+    // Test ROUND formula: =ROUND(125.456, 1) -> "125.5"
+    const roundVal = await page.evaluate(() => window.evaluateFormula('=ROUND(125.456, 1)'));
+    expect(roundVal).toBe('125.5');
+
+    // Test CONCATENATE formula: =CONCATENATE("Item: ", A2) -> "Item: Widget A"
+    const concatVal = await page.evaluate(() => window.evaluateFormula('=CONCATENATE("Item: ", A2)'));
+    expect(concatVal).toBe('Item: Widget A');
+  });
+
+  test('should support multi-sheet workbooks and sheet tab creation', async ({ page }) => {
+    // Add new sheet
+    await page.evaluate(() => window.addNewSheet('Q4_Summary'));
+    
+    // Check if new tab is displayed in DOM
+    const newTab = page.locator('#tab-Q4_Summary');
+    await expect(newTab).toBeVisible();
+    await expect(newTab).toHaveClass(/active/);
+
+    // Switch back to Sheet1
+    await page.locator('#tab-Sheet1').click();
+    await expect(page.locator('#tab-Sheet1')).toHaveClass(/active/);
+  });
+
+  test('should sort columns ascending and descending', async ({ page }) => {
+    // Sort Price column (col 3) descending
+    await page.evaluate(() => {
+      window.setActiveCell(1, 3);
+      window.sortActiveColumn(false);
+    });
+
+    // Row 2 should now be Service B ($300 is max price)
+    const topRowItem = await page.locator('tr:nth-child(2) td:nth-child(2) input').inputValue();
+    expect(topRowItem).toBe('Service B');
+  });
+
+  test('should support Undo and Redo operations', async ({ page }) => {
+    const initialItem = await page.locator('tr:nth-child(2) td:nth-child(2) input').inputValue();
+    
+    // Change value
+    await page.evaluate(() => {
+      window.saveHistory && window.saveHistory();
+      window.currentData[1][0] = 'Changed Item';
+      window.renderTable();
+    });
+
+    const changedItem = await page.locator('tr:nth-child(2) td:nth-child(2) input').inputValue();
+    expect(changedItem).toBe('Changed Item');
+
+    // Trigger undo
+    await page.locator('#btnUndo').click();
+    const undoneItem = await page.locator('tr:nth-child(2) td:nth-child(2) input').inputValue();
+    expect(undoneItem).toBe(initialItem);
+  });
+
+  test('should execute autonomous agent structured actions', async ({ page }) => {
+    await page.evaluate(() => {
+      window.executeAgentActions([
+        { type: 'add_column', header: 'Total Value', formula: '=C{row}*D{row}' }
+      ]);
+    });
+
+    const headers = await page.locator('th input').all();
+    const headerTexts = await Promise.all(headers.map(h => h.inputValue()));
+    expect(headerTexts).toContain('Total Value');
   });
 });
