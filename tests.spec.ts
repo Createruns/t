@@ -286,4 +286,47 @@ Software Ultimate,Software,10,999`;
     const firstRowInputs = await page.locator('tr:nth-child(2) td input').all();
     expect(await firstRowInputs[0].inputValue()).toBe('Widget Premium');
   });
+
+  test('Agent output handling of mixed JSON actions and CSV data', async ({ page }) => {
+    // 1. Send mixed output
+    const mixedOutput = `
+      Here is the data and the requested actions:
+      \`\`\`json
+      {
+        "actions": [
+          {"type": "create_sheet", "name": "Mixed Data"},
+          {"type": "add_column", "header": "Status", "formula": "=IF(C{row}>50, 'High', 'Low')"}
+        ]
+      }
+      \`\`\`
+      And here is the data:
+      \`\`\`csv
+      ID,Item,Quantity
+      1,Apples,100
+      2,Bananas,20
+      \`\`\`
+    `;
+
+    await page.evaluate((out) => window.handleAgentOutput(out), mixedOutput);
+
+    // 2. Check that the new sheet was created and is active
+    const activeTab = await page.locator('.sheet-tab.active').textContent();
+    expect(activeTab).toContain('Mixed Data');
+
+    // 3. Check that the data is populated properly
+    const row2Inputs = await page.locator('tr:nth-child(2) td input').all();
+    expect(await row2Inputs[1].inputValue()).toBe('Apples');
+    expect(await row2Inputs[2].inputValue()).toBe('100');
+
+    // 4. Check that the column was added
+    const headerInputs = await page.locator('th input').all();
+    expect(await headerInputs[3].inputValue()).toBe('Status');
+    // 5. Check that the formula in the new column evaluated correctly
+    // For row 2 (Apples, 100), Status should be 'High'
+    expect(await row2Inputs[3].inputValue()).toBe('High');
+
+    const row3Inputs = await page.locator('tr:nth-child(3) td input').all();
+    // For row 3 (Bananas, 20), Status should be 'Low'
+    expect(await row3Inputs[3].inputValue()).toBe('Low');
+  });
 });
