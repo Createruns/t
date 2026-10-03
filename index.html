@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Mobile AI Sheet & Editor</title>
+    <!-- Include SheetJS for Excel Import/Export -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, sans-serif;
+      }
+      body {
+        background-color: #121212;
+        color: #e0e0e0;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+      }
+      header {
+        padding: 10px 14px;
+        background: #1e1e1e;
+        border-bottom: 1px solid #333;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      header h1 {
+        font-size: 16px;
+        color: #76b900;
+      }
+      .config-btn {
+        background: #2a2a2a;
+        color: #ccc;
+        border: 1px solid #444;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+
+      .workspace {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding: 8px;
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 6px;
+        align-items: center;
+      }
+      .tab-btn {
+        flex: 1;
+        padding: 6px;
+        background: #222;
+        color: #888;
+        border: 1px solid #333;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+      .tab-btn.active {
+        background: #333;
+        color: #fff;
+        border-color: #76b900;
+      }
+      .dropdown {
+        position: relative;
+        display: inline-block;
+      }
+      .dropdown-btn {
+        background: #222;
+        color: #888;
+        border: 1px solid #333;
+        padding: 6px 10px;
+        border-radius: 4px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .dropdown-content {
+        display: none;
+        position: absolute;
+        right: 0;
+        background-color: #222;
+        min-width: 120px;
+        box-shadow: 0px 8px 16px 0px rgba(0, 0, 0, 0.5);
+        z-index: 1;
+        border: 1px solid #333;
+        border-radius: 4px;
+      }
+      .dropdown-content a {
+        color: #ccc;
+        padding: 8px 10px;
+        text-decoration: none;
+        display: block;
+        font-size: 13px;
+      }
+      .dropdown-content a:hover {
+        background-color: #333;
+        color: #fff;
+      }
+      .dropdown:hover .dropdown-content {
+        display: block;
+      }
+      .view-container {
+        flex: 1;
+        overflow: auto;
+        border-radius: 6px;
+        background: #1a1a1a;
+        border: 1px solid #333;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        min-width: 400px;
+      }
+      th,
+      td {
+        border: 1px solid #333;
+        padding: 6px 8px;
+        font-size: 13px;
+        text-align: left;
+      }
+      th {
+        background: #252525;
+        color: #aaa;
+      }
+      td input {
+        width: 100%;
+        background: transparent;
+        border: none;
+        color: #fff;
+        font-size: 13px;
+        outline: none;
+      }
+      #textEditor {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border: none;
+        color: #fff;
+        padding: 10px;
+        resize: none;
+        font-family: monospace;
+        font-size: 13px;
+        outline: none;
+        display: none;
+      }
+
+      .chips {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        padding: 6px 8px;
+        background: #181818;
+        border-top: 1px solid #2a2a2a;
+      }
+      .chip {
+        white-space: nowrap;
+        background: #2a2a2a;
+        color: #bbb;
+        border: 1px solid #3d3d3d;
+        padding: 5px 10px;
+        border-radius: 14px;
+        font-size: 12px;
+      }
+
+      .agent-panel {
+        background: #1e1e1e;
+        border-top: 1px solid #333;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        min-height: 20px;
+      }
+      .status-bar {
+        font-size: 11px;
+        color: #76b900;
+      }
+      .model-select {
+        background: #121212;
+        color: #fff;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 2px 4px;
+        font-size: 11px;
+        max-width: 150px;
+        outline: none;
+      }
+
+      .input-row {
+        display: flex;
+        gap: 8px;
+      }
+      .input-row input {
+        flex: 1;
+        background: #121212;
+        border: 1px solid #444;
+        border-radius: 6px;
+        color: #fff;
+        padding: 8px 10px;
+        font-size: 14px;
+        outline: none;
+      }
+      .send-btn {
+        background: #76b900;
+        color: #000;
+        border: none;
+        font-weight: bold;
+        padding: 8px 14px;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+
+      .modal {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.8);
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+      .modal-content {
+        background: #222;
+        padding: 16px;
+        border-radius: 8px;
+        width: 100%;
+        max-width: 340px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .debug-panel {
+        border-top: 1px solid #333;
+        background: #1a1a1a;
+        display: flex;
+        flex-direction: column;
+      }
+      .debug-header {
+        padding: 4px 10px;
+        background: #222;
+        font-size: 11px;
+        color: #888;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        user-select: none;
+      }
+      .debug-content {
+        display: none;
+        height: 100px;
+        overflow-y: auto;
+        padding: 6px;
+        font-family: monospace;
+        font-size: 11px;
+        background: #111;
+        color: #ccc;
+        border-top: 1px solid #333;
+      }
+      .debug-content div {
+        margin-bottom: 2px;
+        word-wrap: break-word;
+      }
+      .log-info {
+        color: #88cc88;
+      }
+      .log-warn {
+        color: #cccc88;
+      }
+      .log-error {
+        color: #cc8888;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>NVIDIA Data Agent</h1>
+      <button class="config-btn" onclick="openKeyModal()">⚙ API Key</button>
+    </header>
+
+    <div class="workspace">
+      <div class="tabs">
+        <button class="tab-btn active" id="btnGrid" onclick="setTab('grid')">
+          Table View
+        </button>
+        <button class="tab-btn" id="btnText" onclick="setTab('text')">
+          Text / CSV View
+        </button>
+        <div class="dropdown">
+          <button class="dropdown-btn">File ▼</button>
+          <div class="dropdown-content">
+            <a
+              href="#"
+              onclick="
+                document.getElementById('fileInput').click();
+                return false;
+              "
+              >Import</a
+            >
+            <a
+              href="#"
+              onclick="
+                exportExcel();
+                return false;
+              "
+              >Export</a
+            >
+          </div>
+        </div>
+        <input
+          type="file"
+          id="fileInput"
+          style="display: none"
+          accept=".xlsx, .xls, .csv, .ods"
+          onchange="importExcel(event)"
+        />
+      </div>
+
+      <div class="view-container">
+        <div id="gridContainer">
+          <table id="dataTable"></table>
+        </div>
+        <textarea
+          id="textEditor"
+          placeholder="Raw CSV or plain text..."
+        ></textarea>
+      </div>
+    </div>
+
+    <div class="chips">
+      <button
+        class="chip"
+        onclick="setPrompt('Analyze summary: total rows, sums, and top trends')"
+      >
+        📊 Analyze
+      </button>
+      <button class="chip" onclick="setPrompt('Find and replace: ')">
+        🔍 Find & Replace
+      </button>
+      <button
+        class="chip"
+        onclick="setPrompt('Edit: clean missing data and normalize numbers')"
+      >
+        ✏️ Clean
+      </button>
+      <button
+        class="chip"
+        onclick="setPrompt('Write 3 new sample rows of matching data')"
+      >
+        ➕ Add Rows
+      </button>
+    </div>
+
+    <div class="agent-panel">
+      <div class="status-row">
+        <div class="status-bar" id="statusBar">Ready.</div>
+        <select class="model-select" id="modelSelect">
+          <option value="">(Enter API Key to load)</option>
+        </select>
+      </div>
+      <div class="input-row">
+        <input
+          type="text"
+          id="userInput"
+          placeholder="Ask agent to write, edit, replace..."
+        />
+        <button class="send-btn" onclick="runAgent()">Run</button>
+      </div>
+    </div>
+
+    <div class="debug-panel">
+      <div class="debug-header" onclick="toggleDebugPanel()">
+        <span>Debug Logs</span>
+        <span id="debugToggleIcon">▲</span>
+      </div>
+      <div class="debug-content" id="debugContent"></div>
+    </div>
+
+    <div class="modal" id="keyModal">
+      <div class="modal-content">
+        <h3 style="font-size: 15px">NVIDIA API Key</h3>
+        <input
+          type="password"
+          id="apiKeyInput"
+          placeholder="nvapi-..."
+          style="
+            padding: 8px;
+            background: #111;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 4px;
+          "
+        />
+        <button class="send-btn" onclick="saveApiKey()">Save Key</button>
+      </div>
+    </div>
+
+    <script>
+      let currentData = [
+        ["Item", "Category", "Quantity", "Price"],
+        ["Widget A", "Hardware", "15", "120"],
+        ["Service B", "Software", "5", "300"],
+        ["Widget C", "Hardware", "22", "80"],
+      ];
+
+      const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
+
+      function renderTable() {
+        const table = document.getElementById("dataTable");
+        table.innerHTML = "";
+        currentData.forEach((row, rIdx) => {
+          const tr = document.createElement("tr");
+          row.forEach((cell, cIdx) => {
+            const el =
+              rIdx === 0
+                ? document.createElement("th")
+                : document.createElement("td");
+            const input = document.createElement("input");
+            input.value = cell;
+            input.oninput = (e) => {
+              currentData[rIdx][cIdx] = e.target.value;
+              syncToText();
+            };
+            el.appendChild(input);
+            tr.appendChild(el);
+          });
+          table.appendChild(tr);
+        });
+      }
+
+      function syncToText() {
+        document.getElementById("textEditor").value = currentData
+          .map((r) => r.join(","))
+          .join("\n");
+      }
+
+      function syncFromText() {
+        const text = document.getElementById("textEditor").value.trim();
+        if (!text) return;
+        currentData = text
+          .split("\n")
+          .map((row) => row.split(",").map((cell) => cell.trim()));
+        renderTable();
+      }
+
+      function setTab(tab) {
+        const grid = document.getElementById("gridContainer");
+        const text = document.getElementById("textEditor");
+        if (tab === "grid") {
+          syncFromText();
+          grid.style.display = "block";
+          text.style.display = "none";
+          document.getElementById("btnGrid").classList.add("active");
+          document.getElementById("btnText").classList.remove("active");
+        } else {
+          syncToText();
+          grid.style.display = "none";
+          text.style.display = "block";
+          document.getElementById("btnText").classList.add("active");
+          document.getElementById("btnGrid").classList.remove("active");
+        }
+      }
+
+      function importExcel(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: "array" });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            // Filter out empty rows
+            const filteredData = jsonData.filter(
+              (row) =>
+                row.length > 0 &&
+                row.some(
+                  (cell) => cell !== null && cell !== undefined && cell !== "",
+                ),
+            );
+
+            if (filteredData.length > 0) {
+              currentData = filteredData.map((row) =>
+                row.map((cell) => (cell != null ? String(cell) : "")),
+              );
+              // Ensure all rows have the same number of columns based on the header (or max length)
+              const maxCols = Math.max(...currentData.map((row) => row.length));
+              currentData = currentData.map((row) => {
+                const newRow = [...row];
+                while (newRow.length < maxCols) newRow.push("");
+                return newRow;
+              });
+
+              renderTable();
+              syncToText();
+              setStatus("File imported successfully.", "success");
+              logDebug(
+                `Imported file: ${file.name}, Rows: ${currentData.length}, Cols: ${maxCols}`,
+              );
+            } else {
+              setStatus("Imported file is empty or invalid.", "error");
+              logError("Imported file produced empty data.");
+            }
+          } catch (error) {
+            setStatus("Error importing file.", "error");
+            logError("Import error: " + error.message);
+          }
+        };
+        reader.onerror = function () {
+          setStatus("Error reading file.", "error");
+          logError("FileReader error.");
+        };
+        reader.readAsArrayBuffer(file);
+        // Reset input value to allow importing the same file again
+        event.target.value = "";
+      }
+
+      function exportExcel() {
+        try {
+          const worksheet = XLSX.utils.aoa_to_sheet(currentData);
+          const workbook = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+          XLSX.writeFile(workbook, "DataAgent_Export.xlsx");
+          setStatus("File exported successfully.", "success");
+          logDebug("Exported data to Excel file.");
+        } catch (error) {
+          setStatus("Error exporting file.", "error");
+          logError("Export error: " + error.message);
+        }
+      }
+
+      function setPrompt(val) {
+        const input = document.getElementById("userInput");
+        input.value = val;
+        input.focus();
+      }
+
+      function openKeyModal() {
+        document.getElementById("apiKeyInput").value =
+          localStorage.getItem("nv_api_key") || "";
+        document.getElementById("keyModal").style.display = "flex";
+      }
+
+      function saveApiKey() {
+        const key = document.getElementById("apiKeyInput").value.trim();
+        localStorage.setItem("nv_api_key", key);
+        document.getElementById("keyModal").style.display = "none";
+        setStatus("API key saved.");
+        fetchModels();
+      }
+
+      function setStatus(msg, type = "info") {
+        const el = document.getElementById("statusBar");
+        el.innerText = msg;
+        if (type === "error") {
+          el.style.color = "#ff6b6b";
+      } else if (type === "success" || type === "info") {
+          el.style.color = "#76b900";
+        } else {
+          el.style.color = "#aaa";
+        }
+      }
+
+      // New Function to dynamically fetch available models
+      async function fetchModels() {
+        const apiKey = localStorage.getItem("nv_api_key");
+        const select = document.getElementById("modelSelect");
+
+        if (!apiKey) {
+          select.innerHTML = '<option value="">(Enter API Key)</option>';
+          return;
+        }
+
+        setStatus("Fetching models...", "info");
+        try {
+          const res = await fetch(`${NVIDIA_BASE_URL}/models`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+          });
+
+          if (!res.ok) throw new Error("Failed to load models");
+
+          const data = await res.json();
+          select.innerHTML = "";
+
+          if (data.data && data.data.length > 0) {
+            // Sort alphabetically
+            data.data.sort((a, b) => a.id.localeCompare(b.id));
+
+            data.data.forEach((model) => {
+              const opt = document.createElement("option");
+              opt.value = model.id;
+              // Simplify model name for the small dropdown UI
+              opt.textContent = model.id.split("/").pop();
+
+              // Set a good fast model as default if available
+              if (
+                model.id.includes("llama-3.1-70b-instruct") ||
+                model.id === data.data[0].id
+              ) {
+                opt.selected = true;
+              }
+              select.appendChild(opt);
+            });
+            setStatus("Models loaded.", "success");
+            logDebug(`Loaded ${data.data.length} models from API.`);
+          } else {
+            setStatus("No models available.", "error");
+            logError("API returned empty models list.");
+          }
+        } catch (err) {
+          logWarn(
+            `Failed to fetch models: ${err.message}. Falling back to hardcoded models.`,
+          );
+          setStatus("Using fallback models (fetch failed).", "warn");
+
+          const fallbackModels = [
+            "meta/llama-3.1-70b-instruct",
+            "meta/llama-3.1-8b-instruct",
+            "google/gemma-2-9b-it",
+            "google/gemma-2-27b-it",
+            "mistralai/mixtral-8x7b-instruct-v0.1",
+          ];
+
+          select.innerHTML = "";
+          fallbackModels.forEach((modelId) => {
+            const opt = document.createElement("option");
+            opt.value = modelId;
+            opt.textContent = modelId.split("/").pop();
+            if (modelId === "meta/llama-3.1-70b-instruct") {
+              opt.selected = true;
+            }
+            select.appendChild(opt);
+          });
+        }
+      }
+
+      async function runAgent() {
+        const apiKey = localStorage.getItem("nv_api_key");
+        const selectedModel = document.getElementById("modelSelect").value;
+
+        if (!apiKey) return openKeyModal();
+        if (!selectedModel) {
+          setStatus("Please wait for models to load.", "error");
+          logError("Cannot run agent: no model selected.");
+          return;
+        }
+
+        const prompt = document.getElementById("userInput").value.trim();
+        if (!prompt) return;
+
+        syncToText();
+        const rawData = document.getElementById("textEditor").value;
+
+        setStatus(
+          `Agent thinking (${selectedModel.split("/").pop()})...`,
+          "info",
+        );
+        logDebug(`Sending request to agent with model: ${selectedModel}`);
+
+        const systemPrompt = `You are an automated data editor & analysis agent embedded inside a spreadsheet app.
+Current Data (CSV format):
+\`\`\`
+${rawData}
+\`\`\`
+Tasks:
+1. "write"/"edit"/"find and replace": Modify data directly. Return ONLY updated CSV wrapped in \`\`\`csv ... \`\`\`. No conversational text.
+2. "analysis": Provide a concise 3-bullet summary without modifying data.`;
+
+        try {
+          const res = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: prompt },
+              ],
+              temperature: 0.2,
+              max_tokens: 1024,
+            }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error?.message || "Request failed");
+          }
+
+          const data = await res.json();
+          const output = data.choices[0].message.content.trim();
+
+          if (output.includes("```")) {
+            const match = output.match(/```(?:csv)?\n([\s\S]*?)\n```/);
+            const newCsv = match
+              ? match[1].trim()
+              : output.replace(/```/g, "").trim();
+            document.getElementById("textEditor").value = newCsv;
+            syncFromText();
+            setStatus("Data updated successfully.", "success");
+            logDebug("Agent updated data successfully.");
+          } else {
+            alert("Analysis:\n\n" + output);
+            setStatus("Analysis complete.", "success");
+            logDebug("Agent provided analysis.");
+          }
+        } catch (err) {
+          setStatus("Error: " + err.message, "error");
+          logError("Agent execution error: " + err.message);
+        }
+      }
+
+      function toggleDebugPanel() {
+        const content = document.getElementById("debugContent");
+        const icon = document.getElementById("debugToggleIcon");
+        if (content.style.display === "block") {
+          content.style.display = "none";
+          icon.innerText = "▲";
+        } else {
+          content.style.display = "block";
+          icon.innerText = "▼";
+        }
+      }
+
+      function addLogEntry(msg, type = "info") {
+        const content = document.getElementById("debugContent");
+        const div = document.createElement("div");
+        const time = new Date().toLocaleTimeString();
+        div.className = "log-" + type;
+        div.innerText = `[${time}] ${msg}`;
+        content.appendChild(div);
+        content.scrollTop = content.scrollHeight;
+
+        // Also log to console
+        if (type === "info") console.debug(msg);
+        else if (type === "warn") console.warn(msg);
+        else if (type === "error") console.error(msg);
+      }
+
+      function logDebug(msg) {
+        addLogEntry(msg, "info");
+      }
+      function logWarn(msg) {
+        addLogEntry(msg, "warn");
+      }
+      function logError(msg) {
+        addLogEntry(msg, "error");
+      }
+
+      // Initialization
+      renderTable();
+      syncToText();
+
+      // Auto-fetch models on startup if key already exists
+      if (localStorage.getItem("nv_api_key")) {
+        fetchModels();
+      }
+    </script>
+  </body>
+</html>
