@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "dev": "node dev-proxy.js",
+    "start": "node dev-proxy.js"
   },
   "repository": {
     "type": "git",

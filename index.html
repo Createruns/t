@@ -664,6 +664,63 @@
       .log-info { color: #8be9fd; }
       .log-warn { color: var(--warning); }
       .log-error { color: var(--danger); }
+      /* Real-time AI Response Panel */
+      .response-panel {
+        background: var(--bg-secondary);
+        border-top: 1px solid var(--border);
+        max-height: 30vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .response-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 12px;
+        background: var(--bg-tertiary);
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .response-header .response-meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-weight: 400;
+        color: var(--text-secondary);
+      }
+      .response-badge {
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+      }
+      .response-badge.live { color: var(--warning); border-color: var(--warning); }
+      .response-badge.success { color: var(--success); border-color: var(--success); }
+      .response-badge.error { color: var(--danger); border-color: var(--danger); }
+      .response-content {
+        padding: 10px 12px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text-primary);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+      .response-content .placeholder { color: var(--text-secondary); font-style: italic; }
+      .response-clear-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        border-radius: 4px;
+        padding: 2px 8px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      .response-clear-btn:hover { color: var(--text-bright); border-color: var(--border-hover); }
     </style>
   </head>
   <body>
@@ -824,8 +881,9 @@
         <div class="status-bar" id="statusBar" role="status" aria-live="polite">Ready.</div>
         <div class="model-select-group">
           <select class="model-select" id="modelCategory" onchange="onCategoryChange()" aria-label="Model Filter Category">
+            <option value="free" selected>🆓 Free Models</option>
             <option value="all">All Models</option>
-            <option value="gemini" selected>Google Gemini</option>
+            <option value="gemini">Google Gemini</option>
             <option value="code">OpenCode / Coding</option>
           </select>
           <select class="model-select" id="modelSelect" aria-label="Select AI Model">
@@ -845,6 +903,22 @@
           🎤
         </button>
         <button class="send-btn" onclick="runAgent()" aria-label="Send Request to AI Agent">Run</button>
+      </div>
+    </div>
+
+    <!-- Real-time AI Response Panel -->
+    <div class="response-panel" id="responsePanel">
+      <div class="response-header">
+        <span>🤖 AI Response</span>
+        <div class="response-meta">
+          <span class="response-badge" id="responseBadge">Idle</span>
+          <span id="responseModel"></span>
+          <span id="responseTiming"></span>
+          <button class="response-clear-btn" onclick="clearResponsePanel()" aria-label="Clear AI Response">Clear</button>
+        </div>
+      </div>
+      <div class="response-content" id="responseContent" role="log" aria-live="polite">
+        <span class="placeholder">Agent responses will appear here in real time.</span>
       </div>
     </div>
 
@@ -1030,8 +1104,40 @@
       });
 
       // Endpoints
-      const KILO_BASE_URL = "https://api.kilo.ai/api/gateway";
+      // Base URL for the Kilo Gateway. Because the gateway does not send CORS
+      // headers, direct browser calls are blocked. When the app is served by the
+      // bundled dev proxy (dev-proxy.js), the page sets a same-origin override
+      // (window.KILO_BASE_URL_OVERRIDE = "/api/gateway") so requests go through
+      // the proxy and succeed. It also honours a persisted override so advanced
+      // users can point at their own proxy.
+      const KILO_BASE_URL =
+        (typeof window !== "undefined" && window.KILO_BASE_URL_OVERRIDE) ||
+        localStorage.getItem("kilo_base_url") ||
+        "https://api.kilo.ai/api/gateway";
       const GEMINI_DIRECT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+
+      // Known free models on the Kilo Gateway (prompt & completion pricing = 0).
+      // Some free models do not carry the ":free" suffix, so we keep an explicit
+      // allow-list to complement the suffix heuristic in isFreeModel().
+      const KNOWN_FREE_MODELS = new Set([
+        "kilo-auto/free",
+        "openrouter/free",
+        "stealth/space-bunny-alpha",
+        "inclusionai/ling-3.1-flash",
+        "google/lyria-3-pro-preview",
+        "google/lyria-3-clip-preview",
+      ]);
+
+      // Default model to pre-select — a free model so users can run requests
+      // at no cost out of the box.
+      const DEFAULT_FREE_MODEL = "kilo-auto/free";
+
+      // A model is considered free if its id ends with ":free" (OpenRouter-style
+      // convention) or it is in the explicit known-free allow-list above.
+      function isFreeModel(modelId) {
+        if (typeof modelId !== "string") return false;
+        return modelId.toLowerCase().includes(":free") || KNOWN_FREE_MODELS.has(modelId);
+      }
 
       let currentProvider = localStorage.getItem("sheet_ai_provider") || "kilo";
 
@@ -2000,6 +2106,83 @@
         fetchModels();
       }
 
+      // Robustly extract a human-readable error message from a variety of
+      // API error response shapes. The Kilo Gateway (and other OpenAI-style
+      // gateways) are inconsistent, returning errors in several forms:
+      //   { "error": { "code": "...", "message": "..." } }  (auth/model errors)
+      //   { "error": "Malformed JSON", "message": "..." }    (validation errors)
+      //   { "error": "some string" }                          (simple string error)
+      //   { "message": "..." }                                (top-level message)
+      // Reading only `err.error.message` (the previous behaviour) silently
+      // dropped the last three shapes, hiding the real cause from the user.
+      function extractApiErrorMessage(payload, fallback) {
+        if (payload && typeof payload === "object") {
+          const e = payload.error;
+          if (e && typeof e === "object" && e.message) return e.message;
+          if (typeof e === "string" && e) {
+            // Prefer a more descriptive top-level message when present.
+            return payload.message && payload.message !== e
+              ? `${e}: ${payload.message}`
+              : e;
+          }
+          if (typeof payload.message === "string" && payload.message) {
+            return payload.message;
+          }
+        }
+        return fallback;
+      }
+
+      // ----- Real-time AI Response Panel helpers -----
+      // Renders the live state of an agent request so the raw model output is
+      // always visible in the DOM (previously conversational output was shown
+      // via a blocking alert() and never persisted to the page).
+      function setResponseBadge(text, type) {
+        const badge = document.getElementById("responseBadge");
+        if (!badge) return;
+        badge.textContent = text;
+        badge.className = "response-badge" + (type ? ` ${type}` : "");
+      }
+
+      function setResponseContent(text, isPlaceholder) {
+        const el = document.getElementById("responseContent");
+        if (!el) return;
+        if (isPlaceholder) {
+          el.innerHTML = '<span class="placeholder"></span>';
+          el.querySelector(".placeholder").textContent = text;
+        } else {
+          // Use textContent to avoid any HTML injection from model output.
+          el.textContent = text;
+        }
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function clearResponsePanel() {
+        setResponseBadge("Idle", "");
+        setResponseContent("Agent responses will appear here in real time.", true);
+        const m = document.getElementById("responseModel");
+        const t = document.getElementById("responseTiming");
+        if (m) m.textContent = "";
+        if (t) t.textContent = "";
+      }
+
+      function beginResponse(model) {
+        setResponseBadge("Running…", "live");
+        setResponseContent("Waiting for the model to respond…", true);
+        const m = document.getElementById("responseModel");
+        const t = document.getElementById("responseTiming");
+        if (m) m.textContent = model || "";
+        if (t) t.textContent = "";
+      }
+
+      // Show the final, raw model output in the response panel along with a
+      // status badge and the round-trip latency.
+      function showResponse(text, { type = "success", elapsedMs = null } = {}) {
+        setResponseBadge(type === "error" ? "Error" : "Done", type === "error" ? "error" : "success");
+        setResponseContent(text && text.length ? text : "(empty response)");
+        const t = document.getElementById("responseTiming");
+        if (t && elapsedMs != null) t.textContent = `${Math.round(elapsedMs)} ms`;
+      }
+
       function setStatus(msg, type = "info") {
         const el = document.getElementById("statusBar");
         el.innerText = msg;
@@ -2036,12 +2219,30 @@
             headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
           });
 
-          if (!res.ok) throw new Error("Failed to load models from Kilo API");
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({}));
+            throw new Error(
+              extractApiErrorMessage(errBody, `Failed to load models from Kilo API (HTTP ${res.status})`)
+            );
+          }
 
           const json = await res.json();
           const models = json.data || json;
 
           if (Array.isArray(models) && models.length > 0) {
+            // Register any zero-priced models as free so the "Free Models"
+            // filter works on the live catalog (not every free model uses the
+            // ":free" suffix — e.g. kilo-auto/free, stealth/space-bunny-alpha).
+            models.forEach((m) => {
+              const price = m && m.pricing;
+              if (
+                price &&
+                (price.prompt === "0" || price.prompt === 0) &&
+                (price.completion === "0" || price.completion === 0)
+              ) {
+                KNOWN_FREE_MODELS.add(m.id);
+              }
+            });
             fetchedModelsList = models.map((m) => m.id);
             populateModelDropdown();
             setStatus("Models loaded.", "success");
@@ -2063,6 +2264,29 @@
             "kilo-auto/balanced",
             "kilo-auto/efficient",
             "meta/llama-3.1-70b-instruct",
+            // Free models available on the Kilo Gateway (prompt & completion
+            // pricing = 0). Sourced live from GET https://api.kilo.ai/api/gateway/models.
+            "kilo-auto/free",
+            "openrouter/free",
+            "stealth/space-bunny-alpha",
+            "inclusionai/ling-3.1-flash",
+            "stepfun/step-3.7-flash:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3.5-content-safety:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "dots-studio/dots-3-note-preview:free",
+            "poolside/laguna-s-2.1:free",
+            "poolside/laguna-xs-2.1:free",
+            "apodex/apodex-1.1-mini:free",
+            "inclusionai/ling-3.0-flash-sante:free",
+            "qwen/qwen3.8-27b:free",
+            "liquid/lfm-2.5-2.6b:free",
+            "thinkingmachines/inkling-small:free",
+            "cohere/north-mini-code:free",
+            "google/lyria-3-pro-preview",
+            "google/lyria-3-clip-preview",
           ];
           populateModelDropdown();
         }
@@ -2082,6 +2306,8 @@
           filtered = fetchedModelsList.filter(
             (id) => id.toLowerCase().includes("code") || id.toLowerCase().includes("coder") || id.toLowerCase().includes("codex") || id.toLowerCase().includes("kilo-auto")
           );
+        } else if (category === "free") {
+          filtered = fetchedModelsList.filter((id) => isFreeModel(id));
         } else if (category === "gemini") {
           filtered = fetchedModelsList.filter(
             (id) => id.toLowerCase().includes("gemini") || id.toLowerCase().includes("google")
@@ -2094,12 +2320,30 @@
 
         if (filtered.length === 0) filtered = fetchedModelsList;
 
+        // Decide which model should be pre-selected. When browsing free models
+        // we default to DEFAULT_FREE_MODEL (falling back to the first free model
+        // present); otherwise keep the previous Gemini/Qwen default behaviour.
+        const preferFree = category === "free" || currentProvider !== "gemini_direct";
+        let defaultModel = null;
+        if (preferFree && filtered.includes(DEFAULT_FREE_MODEL)) {
+          defaultModel = DEFAULT_FREE_MODEL;
+        } else if (preferFree) {
+          defaultModel = filtered.find((id) => isFreeModel(id)) || null;
+        }
+
         filtered.forEach((modelId) => {
           const opt = document.createElement("option");
           opt.value = modelId;
-          opt.textContent = modelId;
+          opt.textContent = isFreeModel(modelId) ? `${modelId}  🆓` : modelId;
 
-          if (modelId === "google/gemini-3.8-flash" || modelId === "gemini-3.8-flash" || modelId.includes("gemini-3.8") || modelId.includes("qwen3-coder-plus")) {
+          if (defaultModel) {
+            if (modelId === defaultModel) opt.selected = true;
+          } else if (
+            modelId === "google/gemini-3.8-flash" ||
+            modelId === "gemini-3.8-flash" ||
+            modelId.includes("gemini-3.8") ||
+            modelId.includes("qwen3-coder-plus")
+          ) {
             opt.selected = true;
           }
           select.appendChild(opt);
@@ -2131,6 +2375,8 @@
 
         setStatus(`Autonomous Agent working (${selectedModel.split("/").pop()})...`, "info");
         logDebug(`Sending request with provider: ${currentProvider}, model: ${selectedModel}`);
+        beginResponse(selectedModel);
+        const requestStart = performance.now();
 
         const systemPrompt = `You are an Autonomous AI Spreadsheet Expert equivalent to a team of 10 Data Analysts, Financial Modelers, and Spreadsheet Specialists.
 Current Sheet: ${workbook.activeSheet}
@@ -2161,12 +2407,12 @@ Available capabilities:
 
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
-              throw new Error(err.error?.message || `Gemini request failed: ${res.status}`);
+              throw new Error(extractApiErrorMessage(err, `Gemini request failed: ${res.status}`));
             }
 
             const json = await res.json();
             const output = json.candidates?.[0]?.content?.parts?.[0]?.text || "";
-            handleAgentOutput(output);
+            handleAgentOutput(output, { elapsedMs: performance.now() - requestStart });
           } else {
             const res = await fetch(`${KILO_BASE_URL}/chat/completions`, {
               method: "POST",
@@ -2187,16 +2433,33 @@ Available capabilities:
 
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
-              throw new Error(err.error?.message || `Request failed with status ${res.status}`);
+              throw new Error(extractApiErrorMessage(err, `Request failed with status ${res.status}`));
             }
 
             const data = await res.json();
-            const output = data.choices[0].message.content.trim();
-            handleAgentOutput(output);
+            const output = data?.choices?.[0]?.message?.content;
+            if (typeof output !== "string") {
+              throw new Error("Unexpected response: no message content returned by the model.");
+            }
+            handleAgentOutput(output.trim(), { elapsedMs: performance.now() - requestStart });
           }
         } catch (err) {
-          setStatus("Error: " + err.message, "error");
-          logError("Agent execution error: " + err.message);
+          // A "Failed to fetch" TypeError in the browser almost always means the
+          // cross-origin request was blocked by CORS (the Kilo Gateway does not
+          // send Access-Control-Allow-Origin). Give the user an actionable message
+          // instead of the cryptic native error.
+          let message = err.message;
+          if (err instanceof TypeError && /fetch/i.test(err.message)) {
+            message =
+              "Network/CORS error: the browser could not reach the Kilo Gateway directly. " +
+              "The gateway does not allow cross-origin browser requests — route calls through a " +
+              "backend proxy (or a CORS proxy) and try again.";
+          }
+          setStatus("Error: " + message, "error");
+          logError("Agent execution error: " + message);
+          // Surface the failure in the real-time response panel too, so success
+          // vs. failure is always unambiguous to the user.
+          showResponse("⚠ " + message, { type: "error", elapsedMs: performance.now() - requestStart });
         }
       }
 
@@ -2234,8 +2497,18 @@ Available capabilities:
         return null;
       }
 
-      function handleAgentOutput(output) {
-        if (!output) return;
+      function handleAgentOutput(output, { elapsedMs = null } = {}) {
+        // Always render the raw model output in the real-time response panel so
+        // it is visible and testable, regardless of how we interpret it below.
+        showResponse(output || "(empty response)", {
+          type: output ? "success" : "error",
+          elapsedMs,
+        });
+
+        if (!output) {
+          setStatus("Agent returned an empty response.", "error");
+          return;
+        }
 
         let parsedActions = [];
         let candidateCsv = "";
@@ -2301,9 +2574,9 @@ Available capabilities:
           setStatus("Data updated successfully.", "success");
           logDebug("Agent updated data successfully from CSV.");
         } else {
-          // Default: Analysis / conversational text
-          alert("Autonomous Agent Analysis:\n\n" + output);
-          setStatus("Analysis complete.", "success");
+          // Default: Analysis / conversational text. The full text is already
+          // rendered in the real-time response panel above (no blocking alert).
+          setStatus("Analysis complete. See the AI Response panel.", "success");
           logDebug("Agent provided analysis.");
         }
       }
@@ -2429,6 +2702,11 @@ Available capabilities:
       window.executeAgentActions = executeAgentActions;
       window.handleAgentOutput = handleAgentOutput;
       window.extractJsonBlock = extractJsonBlock;
+      window.extractApiErrorMessage = extractApiErrorMessage;
+      window.showResponse = showResponse;
+      window.beginResponse = beginResponse;
+      window.clearResponsePanel = clearResponsePanel;
+      window.runAgent = runAgent;
     </script>
   </body>
 </html>
